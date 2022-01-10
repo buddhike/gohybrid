@@ -214,3 +214,27 @@ func ListenAndServe(addr string, handler http.Handler) error {
 		return http.ListenAndServe(addr, handler)
 	}
 }
+
+func ListenAndServeTLS(addr, certFile, keyFile string, handler http.Handler) error {
+	if _, ok := os.LookupEnv("AWS_LAMBDA_RUNTIME_API"); ok {
+		return startLambda(handler)
+	} else {
+		return http.ListenAndServeTLS(addr, certFile, keyFile, handler)
+	}
+}
+
+func ServerListenAndServe(server *http.Server) error {
+	if _, ok := os.LookupEnv("AWS_LAMBDA_RUNTIME_API"); ok {
+		return startLambda(server.Handler)
+	} else {
+		return server.ListenAndServe()
+	}
+}
+
+func ServerListenAndServeTLS(certFile, keyFile string, server *http.Server) error {
+	if _, ok := os.LookupEnv("AWS_LAMBDA_RUNTIME_API"); ok {
+		return startLambda(server.Handler)
+	} else {
+		return server.ListenAndServeTLS(certFile, keyFile)
+	}
+}
