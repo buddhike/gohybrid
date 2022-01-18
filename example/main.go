@@ -33,5 +33,5 @@ func main() {
 		panic("panic route")
 	})
 
-	gohybrid.ListenAndServe(":8080", nil)
+	gohybrid.ListenAndServe(":8080", nil, gohybrid.WithBasePath("api"))
 }

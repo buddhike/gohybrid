@@ -48,11 +48,20 @@ type lambdaResponse struct {
 	Body              string              `json:"body"`
 }
 
-type httpAdapterHandler struct {
-	http http.Handler
+type HttpAdapterHandler struct {
+	http     http.Handler
+	basepath string
 }
 
-func (h *httpAdapterHandler) Invoke(ctx context.Context, req []byte) ([]byte, error) {
+type HttpAdapterHandlerOption func(h *HttpAdapterHandler)
+
+func WithBasePath(p string) HttpAdapterHandlerOption {
+	return func(h *HttpAdapterHandler) {
+		h.basepath = p
+	}
+}
+
+func (h *HttpAdapterHandler) Invoke(ctx context.Context, req []byte) ([]byte, error) {
 	m := make(map[string]interface{})
 	err := json.Unmarshal(req, &m)
 	if err != nil {
@@ -72,7 +81,7 @@ func (h *httpAdapterHandler) Invoke(ctx context.Context, req []byte) ([]byte, er
 	return nil, errors.New("unsupported integration, supported integrations are: ALB, API Gateway")
 }
 
-func (h *httpAdapterHandler) handleALBEvent(ctx context.Context, event map[string]interface{}) ([]byte, error) {
+func (h *HttpAdapterHandler) handleALBEvent(ctx context.Context, event map[string]interface{}) ([]byte, error) {
 	path := event["path"].(string)
 	method := event["httpMethod"].(string)
 	body := h.extractBodyReader(event)
@@ -90,7 +99,7 @@ func (h *httpAdapterHandler) handleALBEvent(ctx context.Context, event map[strin
 	return json.Marshal(h.toLambdaResponse(res))
 }
 
-func (h *httpAdapterHandler) handleAPIGatewayEvent(ctx context.Context, event map[string]interface{}) ([]byte, error) {
+func (h *HttpAdapterHandler) handleAPIGatewayEvent(ctx context.Context, event map[string]interface{}) ([]byte, error) {
 	path := event["path"].(string)
 	method := event["httpMethod"].(string)
 	body := h.extractBodyReader(event)
@@ -108,7 +117,7 @@ func (h *httpAdapterHandler) handleAPIGatewayEvent(ctx context.Context, event ma
 	return json.Marshal(h.toLambdaResponse(res))
 }
 
-func (h *httpAdapterHandler) handleAPIGatewayHTTPEvent(ctx context.Context, event map[string]interface{}) ([]byte, error) {
+func (h *HttpAdapterHandler) handleAPIGatewayHTTPEvent(ctx context.Context, event map[string]interface{}) ([]byte, error) {
 	path := event["rawPath"].(string)
 	rctx := event["requestContext"].(map[string]interface{})
 	httpInfo := rctx["http"].(map[string]interface{})
@@ -128,7 +137,7 @@ func (h *httpAdapterHandler) handleAPIGatewayHTTPEvent(ctx context.Context, even
 	return json.Marshal(h.toLambdaResponse(res))
 }
 
-func (h *httpAdapterHandler) extractBodyReader(event map[string]interface{}) io.Reader {
+func (h *HttpAdapterHandler) extractBodyReader(event map[string]interface{}) io.Reader {
 	if body, ok := event["body"].(string); ok {
 		isBase64Encoded := event["isBase64Encoded"].(bool)
 		if isBase64Encoded {
@@ -139,7 +148,7 @@ func (h *httpAdapterHandler) extractBodyReader(event map[string]interface{}) io.
 	return &bytes.Reader{}
 }
 
-func (h *httpAdapterHandler) mapQueryString(event map[string]interface{}, req *http.Request) {
+func (h *HttpAdapterHandler) mapQueryString(event map[string]interface{}, req *http.Request) {
 	q := req.URL.Query()
 	if p, ok := event["queryStringParameters"]; ok && p != nil {
 		for k, v := range p.(map[string]interface{}) {
@@ -155,7 +164,7 @@ func (h *httpAdapterHandler) mapQueryString(event map[string]interface{}, req *h
 	}
 }
 
-func (h *httpAdapterHandler) mapHeaders(event map[string]interface{}, req *http.Request) {
+func (h *HttpAdapterHandler) mapHeaders(event map[string]interface{}, req *http.Request) {
 	if p, ok := event["headers"]; ok && p != nil {
 		for k, v := range p.(map[string]interface{}) {
 			req.Header.Add(k, v.(string))
@@ -170,7 +179,7 @@ func (h *httpAdapterHandler) mapHeaders(event map[string]interface{}, req *http.
 	}
 }
 
-func (h *httpAdapterHandler) toLambdaResponse(res *bufferedResponse) *lambdaResponse {
+func (h *HttpAdapterHandler) toLambdaResponse(res *bufferedResponse) *lambdaResponse {
 	r := &lambdaResponse{
 		StatusCode:        res.status,
 		Headers:           map[string]string{},
@@ -196,44 +205,47 @@ func toStringSlice(s []interface{}) []string {
 	return d
 }
 
-func startLambda(handler http.Handler) error {
+func startLambda(handler http.Handler, opts ...HttpAdapterHandlerOption) error {
 	if handler == nil {
 		handler = http.DefaultServeMux
 	}
-	lh := &httpAdapterHandler{
+	lh := &HttpAdapterHandler{
 		http: handler,
+	}
+	for _, opt := range opts {
+		opt(lh)
 	}
 	lambda.StartHandler(lh)
 	return nil
 }
 
-func ListenAndServe(addr string, handler http.Handler) error {
+func ListenAndServe(addr string, handler http.Handler, opts ...HttpAdapterHandlerOption) error {
 	if _, ok := os.LookupEnv("AWS_LAMBDA_RUNTIME_API"); ok {
-		return startLambda(handler)
+		return startLambda(handler, opts...)
 	} else {
 		return http.ListenAndServe(addr, handler)
 	}
 }
 
-func ListenAndServeTLS(addr, certFile, keyFile string, handler http.Handler) error {
+func ListenAndServeTLS(addr, certFile, keyFile string, handler http.Handler, opts ...HttpAdapterHandlerOption) error {
 	if _, ok := os.LookupEnv("AWS_LAMBDA_RUNTIME_API"); ok {
-		return startLambda(handler)
+		return startLambda(handler, opts...)
 	} else {
 		return http.ListenAndServeTLS(addr, certFile, keyFile, handler)
 	}
 }
 
-func ServerListenAndServe(server *http.Server) error {
+func ServerListenAndServe(server *http.Server, opts ...HttpAdapterHandlerOption) error {
 	if _, ok := os.LookupEnv("AWS_LAMBDA_RUNTIME_API"); ok {
-		return startLambda(server.Handler)
+		return startLambda(server.Handler, opts...)
 	} else {
 		return server.ListenAndServe()
 	}
 }
 
-func ServerListenAndServeTLS(certFile, keyFile string, server *http.Server) error {
+func ServerListenAndServeTLS(certFile, keyFile string, server *http.Server, opts ...HttpAdapterHandlerOption) error {
 	if _, ok := os.LookupEnv("AWS_LAMBDA_RUNTIME_API"); ok {
-		return startLambda(server.Handler)
+		return startLambda(server.Handler, opts...)
 	} else {
 		return server.ListenAndServeTLS(certFile, keyFile)
 	}
