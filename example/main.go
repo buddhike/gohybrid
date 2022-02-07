@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/buddyspike/gohybrid"
@@ -33,5 +34,5 @@ func main() {
 		panic("panic route")
 	})
 
-	gohybrid.ListenAndServe(":8080", nil, gohybrid.WithBasePath("api"))
+	gohybrid.ListenAndServe(":8080", nil, gohybrid.WithBasePath(os.Getenv("BASEPATH")))
 }

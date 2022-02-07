@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -57,6 +58,9 @@ type HttpAdapterHandlerOption func(h *HttpAdapterHandler)
 
 func WithBasePath(p string) HttpAdapterHandlerOption {
 	return func(h *HttpAdapterHandler) {
+		if !strings.HasPrefix(p, "/") {
+			p = fmt.Sprintf("/%s", p)
+		}
 		h.basepath = p
 	}
 }
@@ -83,6 +87,7 @@ func (h *HttpAdapterHandler) Invoke(ctx context.Context, req []byte) ([]byte, er
 
 func (h *HttpAdapterHandler) handleALBEvent(ctx context.Context, event map[string]interface{}) ([]byte, error) {
 	path := event["path"].(string)
+	path = rewritePath(path, h.basepath)
 	method := event["httpMethod"].(string)
 	body := h.extractBodyReader(event)
 	req, err := http.NewRequest(method, path, body)
@@ -101,6 +106,7 @@ func (h *HttpAdapterHandler) handleALBEvent(ctx context.Context, event map[strin
 
 func (h *HttpAdapterHandler) handleAPIGatewayEvent(ctx context.Context, event map[string]interface{}) ([]byte, error) {
 	path := event["path"].(string)
+	path = rewritePath(path, h.basepath)
 	method := event["httpMethod"].(string)
 	body := h.extractBodyReader(event)
 	req, err := http.NewRequest(method, path, body)
@@ -119,6 +125,7 @@ func (h *HttpAdapterHandler) handleAPIGatewayEvent(ctx context.Context, event ma
 
 func (h *HttpAdapterHandler) handleAPIGatewayHTTPEvent(ctx context.Context, event map[string]interface{}) ([]byte, error) {
 	path := event["rawPath"].(string)
+	path = rewritePath(path, h.basepath)
 	rctx := event["requestContext"].(map[string]interface{})
 	httpInfo := rctx["http"].(map[string]interface{})
 	method := httpInfo["method"].(string)
@@ -195,6 +202,14 @@ func (h *HttpAdapterHandler) toLambdaResponse(res *bufferedResponse) *lambdaResp
 		}
 	}
 	return r
+}
+
+func rewritePath(path, basepath string) string {
+	path = strings.Replace(path, basepath, "", 1)
+	if path == "" {
+		path = "/"
+	}
+	return path
 }
 
 func toStringSlice(s []interface{}) []string {
