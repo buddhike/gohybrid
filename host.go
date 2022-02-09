@@ -58,7 +58,7 @@ type HttpAdapterHandlerOption func(h *HttpAdapterHandler)
 
 func WithBasePath(p string) HttpAdapterHandlerOption {
 	return func(h *HttpAdapterHandler) {
-		if !strings.HasPrefix(p, "/") {
+		if p != "" && !strings.HasPrefix(p, "/") {
 			p = fmt.Sprintf("/%s", p)
 		}
 		h.basepath = p
