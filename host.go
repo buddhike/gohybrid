@@ -205,9 +205,12 @@ func (h *HttpAdapterHandler) toLambdaResponse(res *bufferedResponse) *lambdaResp
 }
 
 func rewritePath(path, basepath string) string {
-	path = strings.Replace(path, basepath, "", 1)
-	if path == "" {
-		path = "/"
+	if strings.HasPrefix(path, basepath) {
+		path = strings.Replace(path, basepath, "", 1)
+		if path == "" {
+			path = "/"
+		}
+		return path
 	}
 	return path
 }
