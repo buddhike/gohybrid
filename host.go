@@ -57,14 +57,6 @@ func (w *bufferedResponse) headers() (map[string]string, map[string][]string) {
 	return h, mvh
 }
 
-type lambdaResponse struct {
-	StatusCode        int                 `json:"statusCode"`
-	Headers           map[string]string   `json:"headers"`
-	MultiValueHeaders map[string][]string `json:"multiValueHeaders"`
-	IsBase64Encoded   bool                `json:"isBase64Encoded"`
-	Body              string              `json:"body"`
-}
-
 type HttpAdapterHandler struct {
 	http     http.Handler
 	basepath string
