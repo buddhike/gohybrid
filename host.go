@@ -8,13 +8,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"strings"
 
+	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
 )
+
+const HeaderIsBase64Encoded = "X-IsBase64Encoded"
 
 type bufferedResponse struct {
 	header      http.Header
@@ -39,6 +41,20 @@ func (w *bufferedResponse) WriteHeader(statusCode int) {
 		w.status = statusCode
 		w.wroteHeader = true
 	}
+}
+
+func (w *bufferedResponse) headers() (map[string]string, map[string][]string) {
+	h := make(map[string]string)
+	mvh := make(map[string][]string)
+
+	for k, v := range w.header {
+		if len(v) == 1 {
+			h[k] = v[0]
+		} else {
+			mvh[k] = v
+		}
+	}
+	return h, mvh
 }
 
 type lambdaResponse struct {
@@ -71,21 +87,20 @@ func (h *HttpAdapterHandler) Invoke(ctx context.Context, req []byte) ([]byte, er
 	if err != nil {
 		return nil, err
 	}
-	log.Println(string(req))
 	if rctx, ok := m["requestContext"]; ok {
 		k := rctx.(map[string]interface{})
 		if _, s := k["elb"]; s {
-			return h.handleALBEvent(ctx, m)
+			return h.handleALBTargetGroupRequest(ctx, m)
 		} else if _, s := k["http"]; s {
-			return h.handleAPIGatewayHTTPEvent(ctx, m)
+			return h.handleAPIGatewayV2HttpRequest(ctx, m)
 		} else if _, s := k["resourcePath"]; s {
-			return h.handleAPIGatewayEvent(ctx, m)
+			return h.handleAPIGatewayProxyRequest(ctx, m)
 		}
 	}
 	return nil, errors.New("unsupported integration, supported integrations are: ALB, API Gateway")
 }
 
-func (h *HttpAdapterHandler) handleALBEvent(ctx context.Context, event map[string]interface{}) ([]byte, error) {
+func (h *HttpAdapterHandler) handleALBTargetGroupRequest(ctx context.Context, event map[string]interface{}) ([]byte, error) {
 	path := event["path"].(string)
 	path = rewritePath(path, h.basepath)
 	method := event["httpMethod"].(string)
@@ -101,10 +116,18 @@ func (h *HttpAdapterHandler) handleALBEvent(ctx context.Context, event map[strin
 		buffer: &bytes.Buffer{},
 	}
 	h.http.ServeHTTP(res, req)
-	return json.Marshal(h.toLambdaResponse(res))
+	headers, mvheaders := res.headers()
+	albres := events.ALBTargetGroupResponse{
+		StatusCode:        res.status,
+		Headers:           headers,
+		MultiValueHeaders: mvheaders,
+		Body:              res.buffer.String(),
+		IsBase64Encoded:   false,
+	}
+	return json.Marshal(albres)
 }
 
-func (h *HttpAdapterHandler) handleAPIGatewayEvent(ctx context.Context, event map[string]interface{}) ([]byte, error) {
+func (h *HttpAdapterHandler) handleAPIGatewayProxyRequest(ctx context.Context, event map[string]interface{}) ([]byte, error) {
 	path := event["path"].(string)
 	path = rewritePath(path, h.basepath)
 	method := event["httpMethod"].(string)
@@ -120,10 +143,19 @@ func (h *HttpAdapterHandler) handleAPIGatewayEvent(ctx context.Context, event ma
 		buffer: &bytes.Buffer{},
 	}
 	h.http.ServeHTTP(res, req)
-	return json.Marshal(h.toLambdaResponse(res))
+	headers, mvheaders := res.headers()
+	gwres := events.APIGatewayProxyResponse{
+		StatusCode:        res.status,
+		Headers:           headers,
+		MultiValueHeaders: mvheaders,
+		Body:              res.buffer.String(),
+		IsBase64Encoded:   headers[HeaderIsBase64Encoded] == "1",
+	}
+
+	return json.Marshal(gwres)
 }
 
-func (h *HttpAdapterHandler) handleAPIGatewayHTTPEvent(ctx context.Context, event map[string]interface{}) ([]byte, error) {
+func (h *HttpAdapterHandler) handleAPIGatewayV2HttpRequest(ctx context.Context, event map[string]interface{}) ([]byte, error) {
 	path := event["rawPath"].(string)
 	path = rewritePath(path, h.basepath)
 	rctx := event["requestContext"].(map[string]interface{})
@@ -141,14 +173,23 @@ func (h *HttpAdapterHandler) handleAPIGatewayHTTPEvent(ctx context.Context, even
 		buffer: &bytes.Buffer{},
 	}
 	h.http.ServeHTTP(res, req)
-	return json.Marshal(h.toLambdaResponse(res))
+	headers, mvheaders := res.headers()
+	gwv2res := events.APIGatewayV2HTTPResponse{
+		StatusCode:        res.status,
+		Headers:           headers,
+		MultiValueHeaders: mvheaders,
+		Body:              res.buffer.String(),
+		IsBase64Encoded:   false,
+	}
+	return json.Marshal(gwv2res)
 }
 
 func (h *HttpAdapterHandler) extractBodyReader(event map[string]interface{}) io.Reader {
 	if body, ok := event["body"].(string); ok {
-		isBase64Encoded := event["isBase64Encoded"].(bool)
-		if isBase64Encoded {
-			return base64.NewDecoder(&base64.Encoding{}, bytes.NewBufferString(body))
+		if e, ok := event["isBase64Encoded"]; ok {
+			if e.(bool) {
+				return base64.NewDecoder(base64.StdEncoding, bytes.NewBufferString(body))
+			}
 		}
 		return bytes.NewBufferString(body)
 	}
@@ -169,6 +210,7 @@ func (h *HttpAdapterHandler) mapQueryString(event map[string]interface{}, req *h
 			}
 		}
 	}
+	req.URL.RawQuery = q.Encode()
 }
 
 func (h *HttpAdapterHandler) mapHeaders(event map[string]interface{}, req *http.Request) {
@@ -184,24 +226,6 @@ func (h *HttpAdapterHandler) mapHeaders(event map[string]interface{}, req *http.
 			req.Header.Add(k, j)
 		}
 	}
-}
-
-func (h *HttpAdapterHandler) toLambdaResponse(res *bufferedResponse) *lambdaResponse {
-	r := &lambdaResponse{
-		StatusCode:        res.status,
-		Headers:           map[string]string{},
-		MultiValueHeaders: map[string][]string{},
-		IsBase64Encoded:   false,
-		Body:              res.buffer.String(),
-	}
-	for k, v := range res.header {
-		if len(v) == 1 {
-			r.Headers[k] = v[0]
-		} else {
-			r.MultiValueHeaders[k] = v
-		}
-	}
-	return r
 }
 
 func rewritePath(path, basepath string) string {
