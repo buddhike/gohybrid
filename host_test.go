@@ -23,63 +23,132 @@ func (h *testHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func TestAPIGatewayProxyRequest(t *testing.T) {
-	// Arrange
-	e := events.APIGatewayProxyRequest{
-		HTTPMethod: "GET",
-		Resource:   "/my/resource",
-		Path:       "/my/resource",
-		QueryStringParameters: map[string]string{
-			"a": "b",
+	type testCase struct {
+		Event                 interface{}
+		Path                  string
+		Method                string
+		Body                  string
+		Status                int
+		QueryStringParameters map[string]string
+	}
+
+	cases := []testCase{
+		{
+			events.APIGatewayProxyRequest{
+				HTTPMethod: "GET",
+				Resource:   "/my/resource",
+				Path:       "/my/resource",
+				QueryStringParameters: map[string]string{
+					"a": "b",
+				},
+				Body: "hello",
+			},
+			"/my/resource",
+			"GET",
+			"hello",
+			200,
+			map[string]string{"a": "b"},
 		},
-		Body: "hello",
-	}
-	r, _ := json.Marshal(e)
-	th := &testHandler{}
-
-	//Act
-	a := HttpAdapterHandler{
-		http: th,
-	}
-	res, err := a.Invoke(context.TODO(), r)
-	var gwpres events.APIGatewayProxyResponse
-	json.Unmarshal(res, &gwpres)
-
-	// Assert
-	assert.Equal(t, "/my/resource", th.request.URL.Path)
-	assert.Equal(t, "b", th.request.URL.Query().Get("a"))
-	assert.Equal(t, "GET", th.request.Method)
-	b, _ := io.ReadAll(th.request.Body)
-	assert.Equal(t, "hello", string(b))
-	assert.Nil(t, err)
-	assert.Equal(t, 200, gwpres.StatusCode)
-}
-
-func TestAPIGatewayProxyRequestWhenBodyIsBase64Encoded(t *testing.T) {
-	// Arrange
-	body := base64.StdEncoding.EncodeToString([]byte("hello"))
-	e := events.APIGatewayProxyRequest{
-		HTTPMethod: "GET",
-		Resource:   "/my/resource",
-		Path:       "/my/resource",
-		QueryStringParameters: map[string]string{
-			"a": "b",
+		{
+			events.ALBTargetGroupRequest{
+				HTTPMethod: "GET",
+				Path:       "/my/resource",
+				QueryStringParameters: map[string]string{
+					"a": "b",
+				},
+				Body: "hello",
+			},
+			"/my/resource",
+			"GET",
+			"hello",
+			200,
+			map[string]string{"a": "b"},
 		},
-		Body:            body,
-		IsBase64Encoded: true,
+		{
+			events.APIGatewayV2HTTPRequest{
+				RawPath:        "/my/resource",
+				RouteKey:       "DEFAULT",
+				RawQueryString: "a=b",
+				QueryStringParameters: map[string]string{
+					"a": "b",
+				},
+				Body: "hello",
+			},
+			"/my/resource",
+			"GET",
+			"hello",
+			200,
+			map[string]string{"a": "b"},
+		},
+		{
+			events.APIGatewayProxyRequest{
+				HTTPMethod: "GET",
+				Resource:   "/my/resource",
+				Path:       "/my/resource",
+				QueryStringParameters: map[string]string{
+					"a": "b",
+				},
+				Body:            base64.StdEncoding.EncodeToString([]byte("hello")),
+				IsBase64Encoded: true,
+			},
+			"/my/resource",
+			"GET",
+			"hello",
+			200,
+			map[string]string{"a": "b"},
+		},
+		{
+			events.ALBTargetGroupRequest{
+				HTTPMethod: "GET",
+				Path:       "/my/resource",
+				QueryStringParameters: map[string]string{
+					"a": "b",
+				},
+				Body:            base64.StdEncoding.EncodeToString([]byte("hello")),
+				IsBase64Encoded: true,
+			},
+			"/my/resource",
+			"GET",
+			"hello",
+			200,
+			map[string]string{"a": "b"},
+		},
+		{
+			events.APIGatewayV2HTTPRequest{
+				RawPath:        "/my/resource",
+				RouteKey:       "DEFAULT",
+				RawQueryString: "a=b",
+				QueryStringParameters: map[string]string{
+					"a": "b",
+				},
+				Body:            base64.StdEncoding.EncodeToString([]byte("hello")),
+				IsBase64Encoded: true,
+			},
+			"/my/resource",
+			"GET",
+			"hello",
+			200,
+			map[string]string{"a": "b"},
+		},
 	}
-	r, _ := json.Marshal(e)
-	th := &testHandler{}
 
-	//Act
-	a := HttpAdapterHandler{
-		http: th,
+	for _, c := range cases {
+		// Arrange
+		r, _ := json.Marshal(c.Event)
+		th := &testHandler{}
+		a := HttpAdapterHandler{
+			http: th,
+		}
+
+		// Act
+		_, err := a.Invoke(context.TODO(), r)
+		assert.Nil(t, err)
+		assert.Equal(t, c.Path, th.request.URL.Path)
+		assert.Equal(t, c.Method, th.request.Method)
+		b, _ := io.ReadAll(th.request.Body)
+		assert.Equal(t, c.Body, string(b))
+		for k, v := range c.QueryStringParameters {
+			assert.Equal(t, v, th.request.URL.Query().Get(k))
+		}
 	}
-	a.Invoke(context.TODO(), r)
-
-	// Assert
-	assert.Equal(t, "GET", th.request.Method)
-	assert.Equal(t, "/my/resource", th.request.URL.Path)
-	assert.Equal(t, "b", th.request.URL.Query().Get("a"))
-	b, _ := io.ReadAll(th.request.Body)
-	assert.Equal(t, "hello", string(b))
 }

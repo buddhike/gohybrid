@@ -16,38 +16,41 @@ import (
 	"github.com/aws/aws-lambda-go/lambda"
 )
 
-const HeaderIsBase64Encoded = "X-IsBase64Encoded"
+type ContextKey string
 
-type bufferedResponse struct {
+const ContextIsBase64Encoded ContextKey = "ContextIsBase64Encoded"
+
+type response struct {
+	req         *http.Request
 	header      http.Header
 	wroteHeader bool
 	status      int
 	buffer      *bytes.Buffer
 }
 
-func (w *bufferedResponse) Header() http.Header {
-	return w.header
+func (r *response) Header() http.Header {
+	return r.header
 }
 
-func (w *bufferedResponse) Write(p []byte) (int, error) {
-	if !w.wroteHeader {
-		w.WriteHeader(http.StatusOK)
+func (r *response) Write(p []byte) (int, error) {
+	if !r.wroteHeader {
+		r.WriteHeader(http.StatusOK)
 	}
-	return w.buffer.Write(p)
+	return r.buffer.Write(p)
 }
 
-func (w *bufferedResponse) WriteHeader(statusCode int) {
-	if !w.wroteHeader {
-		w.status = statusCode
-		w.wroteHeader = true
+func (r *response) WriteHeader(statusCode int) {
+	if !r.wroteHeader {
+		r.status = statusCode
+		r.wroteHeader = true
 	}
 }
 
-func (w *bufferedResponse) headers() (map[string]string, map[string][]string) {
+func (r *response) groupHeaders() (map[string]string, map[string][]string) {
 	h := make(map[string]string)
 	mvh := make(map[string][]string)
 
-	for k, v := range w.header {
+	for k, v := range r.header {
 		if len(v) == 1 {
 			h[k] = v[0]
 		} else {
@@ -55,6 +58,17 @@ func (w *bufferedResponse) headers() (map[string]string, map[string][]string) {
 		}
 	}
 	return h, mvh
+}
+
+func (r *response) bodyString() string {
+	if r.isBase64Encoded() {
+		return base64.StdEncoding.EncodeToString(r.buffer.Bytes())
+	}
+	return r.buffer.String()
+}
+
+func (r *response) isBase64Encoded() bool {
+	return r.req.Context().Value(ContextIsBase64Encoded) != nil
 }
 
 type HttpAdapterHandler struct {
@@ -103,18 +117,19 @@ func (h *HttpAdapterHandler) handleALBTargetGroupRequest(ctx context.Context, ev
 	}
 	h.mapQueryString(event, req)
 	h.mapHeaders(event, req)
-	res := &bufferedResponse{
+	res := &response{
+		req:    req,
 		header: make(http.Header),
 		buffer: &bytes.Buffer{},
 	}
 	h.http.ServeHTTP(res, req)
-	headers, mvheaders := res.headers()
+	headers, mvheaders := res.groupHeaders()
 	albres := events.ALBTargetGroupResponse{
 		StatusCode:        res.status,
 		Headers:           headers,
 		MultiValueHeaders: mvheaders,
-		Body:              res.buffer.String(),
-		IsBase64Encoded:   false,
+		Body:              res.bodyString(),
+		IsBase64Encoded:   res.isBase64Encoded(),
 	}
 	return json.Marshal(albres)
 }
@@ -130,18 +145,19 @@ func (h *HttpAdapterHandler) handleAPIGatewayProxyRequest(ctx context.Context, e
 	}
 	h.mapQueryString(event, req)
 	h.mapHeaders(event, req)
-	res := &bufferedResponse{
+	res := &response{
+		req:    req,
 		header: make(http.Header),
 		buffer: &bytes.Buffer{},
 	}
 	h.http.ServeHTTP(res, req)
-	headers, mvheaders := res.headers()
+	headers, mvheaders := res.groupHeaders()
 	gwres := events.APIGatewayProxyResponse{
 		StatusCode:        res.status,
 		Headers:           headers,
 		MultiValueHeaders: mvheaders,
 		Body:              res.buffer.String(),
-		IsBase64Encoded:   headers[HeaderIsBase64Encoded] == "1",
+		IsBase64Encoded:   res.isBase64Encoded(),
 	}
 
 	return json.Marshal(gwres)
@@ -160,18 +176,19 @@ func (h *HttpAdapterHandler) handleAPIGatewayV2HttpRequest(ctx context.Context, 
 	}
 	h.mapQueryString(event, req)
 	h.mapHeaders(event, req)
-	res := &bufferedResponse{
+	res := &response{
+		req:    req,
 		header: make(http.Header),
 		buffer: &bytes.Buffer{},
 	}
 	h.http.ServeHTTP(res, req)
-	headers, mvheaders := res.headers()
+	headers, mvheaders := res.groupHeaders()
 	gwv2res := events.APIGatewayV2HTTPResponse{
 		StatusCode:        res.status,
 		Headers:           headers,
 		MultiValueHeaders: mvheaders,
-		Body:              res.buffer.String(),
-		IsBase64Encoded:   false,
+		Body:              res.bodyString(),
+		IsBase64Encoded:   res.isBase64Encoded(),
 	}
 	return json.Marshal(gwv2res)
 }
