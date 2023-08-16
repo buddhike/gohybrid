@@ -16,9 +16,11 @@ import (
 	"github.com/aws/aws-lambda-go/lambda"
 )
 
-type ContextKey string
-
-const ContextIsBase64Encoded ContextKey = "ContextIsBase64Encoded"
+var binaryMimeTypes = []string{
+	"image/",
+	"application/pdf",
+	"application/binary",
+}
 
 type response struct {
 	req         *http.Request
@@ -46,6 +48,15 @@ func (r *response) WriteHeader(statusCode int) {
 	}
 }
 
+func (r *response) finalise() {
+	if r.header.Get("Content-Type") == "" {
+		r.header.Add("Content-Type", http.DetectContentType(r.buffer.Bytes()))
+	}
+	if r.header.Get("Content-Length") == "" {
+		r.header.Add("Content-Length", fmt.Sprintf("%d", r.buffer.Len()))
+	}
+}
+
 func (r *response) groupHeaders() (map[string]string, map[string][]string) {
 	h := make(map[string]string)
 	mvh := make(map[string][]string)
@@ -68,7 +79,13 @@ func (r *response) bodyString() string {
 }
 
 func (r *response) isBase64Encoded() bool {
-	return r.req.Context().Value(ContextIsBase64Encoded) != nil
+	ct := r.header.Get("Content-Type")
+	for _, bmt := range binaryMimeTypes {
+		if strings.Index(ct, bmt) == 0 {
+			return true
+		}
+	}
+	return false
 }
 
 type HttpAdapterHandler struct {
@@ -123,6 +140,7 @@ func (h *HttpAdapterHandler) handleALBTargetGroupRequest(ctx context.Context, ev
 		buffer: &bytes.Buffer{},
 	}
 	h.http.ServeHTTP(res, req)
+	res.finalise()
 	headers, mvheaders := res.groupHeaders()
 	albres := events.ALBTargetGroupResponse{
 		StatusCode:        res.status,
@@ -151,12 +169,13 @@ func (h *HttpAdapterHandler) handleAPIGatewayProxyRequest(ctx context.Context, e
 		buffer: &bytes.Buffer{},
 	}
 	h.http.ServeHTTP(res, req)
+	res.finalise()
 	headers, mvheaders := res.groupHeaders()
 	gwres := events.APIGatewayProxyResponse{
 		StatusCode:        res.status,
 		Headers:           headers,
 		MultiValueHeaders: mvheaders,
-		Body:              res.buffer.String(),
+		Body:              res.bodyString(),
 		IsBase64Encoded:   res.isBase64Encoded(),
 	}
 
@@ -182,6 +201,7 @@ func (h *HttpAdapterHandler) handleAPIGatewayV2HttpRequest(ctx context.Context, 
 		buffer: &bytes.Buffer{},
 	}
 	h.http.ServeHTTP(res, req)
+	res.finalise()
 	headers, mvheaders := res.groupHeaders()
 	gwv2res := events.APIGatewayV2HTTPResponse{
 		StatusCode:        res.status,
